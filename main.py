@@ -436,6 +436,43 @@ async def register_error(interaction: discord.Interaction, error: app_commands.A
     else:
         print(f"Unexpected error in /register: {error}")
 
+@bot.tree.command(name="check", description="Check your currently registered War Thunder account(s)")
+async def check(interaction: discord.Interaction):
+    data = load_data()
+    user_id = interaction.user.id
+
+    entries = []
+    for t in TEAMS:
+        for entry in data[t]:
+            if entry["discord_id"] == user_id:
+                entries.append(entry)
+
+    if not entries:
+        embed = discord.Embed(
+            title="🔍 Registration Check",
+            description=(
+                "You don't have any War Thunder account linked yet.\n\n"
+                "Use the registration button in the announcement channel to get set up!"
+            ),
+            color=discord.Color.red()
+        )
+    else:
+        lines = []
+        for entry in entries:
+            link = f"https://warthunder.com/en/community/userinfo/?nick={quote(entry['username'])}"
+            lines.append(f"• **{entry['username']}** — Team **{entry.get('team', '?')}**\n  🔗 {link}")
+
+        embed = discord.Embed(
+            title="🔍 Registration Check",
+            description=(
+                f"You currently have **{len(entries)}** account(s) registered:\n\n" +
+                "\n".join(lines)
+            ),
+            color=discord.Color.green()
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 # ==================== BOT EVENTS ====================
 
