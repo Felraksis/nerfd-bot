@@ -253,6 +253,199 @@ class UsernameModal(discord.ui.Modal, title="War Thunder Registration"):
         except discord.HTTPException:
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# ==================== REMOVE/EDIT ENTRY SYSTEM ====================
+
+class ConfirmDeleteModal(discord.ui.Modal, title="Confirm Deletion"):
+    def __init__(self, team: str, entry: dict, parent_view: "EntryActionView"):
+        super().__init__()
+        self.team = team
+        self.entry = entry
+        self.parent_view = parent_view
+
+    confirm_text = discord.ui.TextInput(
+        label='Type "Confirm" to delete this entry',
+        placeholder="Confirm",
+        required=True,
+        max_length=10
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.confirm_text.value.strip().lower() != "confirm":
+            await interaction.response.send_message(
+                "❌ Confirmation text did not match. Deletion cancelled.", ephemeral=True
+            )
+            return
+
+        data = load_data()
+        data[self.team] = [
+            e for e in data[self.team]
+            if not (e["discord_id"] == self.entry["discord_id"] and e["username"] == self.entry["username"])
+        ]
+        save_data(data)
+        await update_roster_embeds(interaction.guild)
+
+        embed = discord.Embed(
+            title="🗑️ Entry Deleted",
+            description=(
+                f"Removed **{self.entry['username']}** (<@{self.entry['discord_id']}>) "
+                f"from team **{self.team}**."
+            ),
+            color=discord.Color.red()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class EditUsernameModal(discord.ui.Modal, title="Edit Username"):
+    def __init__(self, team: str, entry: dict):
+        super().__init__()
+        self.team = team
+        self.entry = entry
+
+    new_username = discord.ui.TextInput(
+        label="New War Thunder Username",
+        required=True,
+        max_length=64
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        new_name = self.new_username.value.strip()
+        data = load_data()
+
+        # Check for conflicts with other entries (any team)
+        for t in TEAMS:
+            for e in data[t]:
+                if e["username"].lower() == new_name.lower() and not (
+                    e["discord_id"] == self.entry["discord_id"] and e["username"] == self.entry["username"]
+                ):
+                    embed = discord.Embed(
+                        title="⚠️ Duplicate Username",
+                        description=(
+                            f"**{new_name}** is already registered by <@{e['discord_id']}> "
+                            f"(`{e['discord_name']}`) on team **{t}**. Edit cancelled."
+                        ),
+                        color=discord.Color.red()
+                    )
+                    await interaction.response.edit_message(embed=embed, view=None)
+                    return
+
+        # Apply the edit
+        for e in data[self.team]:
+            if e["discord_id"] == self.entry["discord_id"] and e["username"] == self.entry["username"]:
+                e["username"] = new_name
+                break
+
+        save_data(data)
+        await update_roster_embeds(interaction.guild)
+
+        embed = discord.Embed(
+            title="✏️ Entry Updated",
+            description=(
+                f"<@{self.entry['discord_id']}> is now registered as **{new_name}** "
+                f"on team **{self.team}**.\n"
+                f"🔗 https://warthunder.com/en/community/userinfo/?nick={quote(new_name)}"
+            ),
+            color=discord.Color.green()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class EntryActionView(discord.ui.View):
+    """Shows Delete/Edit buttons for a single selected entry."""
+    def __init__(self, team: str, entry: dict):
+        super().__init__(timeout=120)
+        self.team = team
+        self.entry = entry
+
+    @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger)
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ConfirmDeleteModal(self.team, self.entry, self))
+
+    @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary)
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(EditUsernameModal(self.team, self.entry))
+
+
+class EntrySelect(discord.ui.Select):
+    """Lists entries for the chosen team; selecting one shows action buttons."""
+    def __init__(self, team: str, entries: list):
+        self.team = team
+        self.entries = entries
+
+        options = []
+        for idx, entry in enumerate(entries):
+            options.append(
+                discord.SelectOption(
+                    label=entry["username"][:100],
+                    description=f"Discord: {entry.get('discord_name', 'Unknown')}"[:100],
+                    value=str(idx)
+                )
+            )
+
+        super().__init__(placeholder="Select an entry...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        idx = int(self.values[0])
+        entry = self.entries[idx]
+
+        embed = discord.Embed(
+            title="📄 Entry Details",
+            description=(
+                f"**Username:** {entry['username']}\n"
+                f"**Discord:** <@{entry['discord_id']}> (`{entry.get('discord_name', 'Unknown')}`)\n"
+                f"**Team:** {self.team}\n"
+                f"🔗 https://warthunder.com/en/community/userinfo/?nick={quote(entry['username'])}"
+            ),
+            color=discord.Color.blurple()
+        )
+        view = EntryActionView(self.team, entry)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class EntrySelectView(discord.ui.View):
+    def __init__(self, team: str, entries: list):
+        super().__init__(timeout=120)
+        self.add_item(EntrySelect(team, entries))
+
+
+class TeamPickSelect(discord.ui.Select):
+    """First step: pick which team's roster to browse."""
+    def __init__(self, data: dict):
+        self.data = data
+        options = [
+            discord.SelectOption(
+                label=team,
+                description=f"{len(data[team])} entries"
+            ) for team in TEAMS
+        ]
+        super().__init__(placeholder="Select a squad...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        team = self.values[0]
+        entries = self.data[team]
+
+        if not entries:
+            embed = discord.Embed(
+                title=f"📋 {team} Entries",
+                description="*No entries in this squad.*",
+                color=discord.Color.greyple()
+            )
+            await interaction.response.edit_message(embed=embed, view=None)
+            return
+
+        lines = [f"• **{e['username']}** — <@{e['discord_id']}>" for e in entries]
+        embed = discord.Embed(
+            title=f"📋 {team} Entries",
+            description="\n".join(lines) + "\n\nSelect an entry below to manage it:",
+            color=discord.Color.blue() if team == "NERFD" else discord.Color.purple()
+        )
+        view = EntrySelectView(team, entries)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class TeamPickView(discord.ui.View):
+    def __init__(self, data: dict):
+        super().__init__(timeout=120)
+        self.add_item(TeamPickSelect(data))
 
 # ==================== DUPLICATE HANDLING VIEWS ====================
 
@@ -473,6 +666,39 @@ async def check(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# ==================== /remove COMMAND ====================
+
+@bot.tree.command(name="remove", description="View, edit, or delete registered entries")
+@has_required_role()
+async def remove(interaction: discord.Interaction):
+    data = load_data()
+
+    all_lines = []
+    for team in TEAMS:
+        if data[team]:
+            all_lines.append(f"**{team}:**")
+            for e in data[team]:
+                all_lines.append(f"• {e['username']} — <@{e['discord_id']}>")
+        else:
+            all_lines.append(f"**{team}:** *No entries*")
+
+    embed = discord.Embed(
+        title="🗂️ All Registered Entries",
+        description="\n".join(all_lines) if all_lines else "*No entries at all.*",
+        color=discord.Color.dark_gold()
+    )
+    embed.add_field(name="\u200b", value="Select a squad below to manage its entries:", inline=False)
+
+    view = TeamPickView(data)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+@remove.error
+async def remove_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        pass
+    else:
+        print(f"Unexpected error in /remove: {error}")
 
 # ==================== BOT EVENTS ====================
 
