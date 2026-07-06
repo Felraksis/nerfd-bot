@@ -781,20 +781,19 @@ def parse_ticket_embeds(embeds: list[discord.Embed]):
     meets_requirements = None
     age_confirmed = None
 
-    text = second_embed.description or ""
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    for field in second_embed.fields:
+        name = (field.name or "").lower()
+        value = (field.value or "").strip()
 
-    for i, line in enumerate(lines):
-        # Match "1." or "**1.**" style prefixes, ignoring markdown bold
-        clean_line = line.lstrip("*").strip()
-        if re.match(r"^1\.", clean_line) and i + 1 < len(lines):
-            ign = lines[i + 1].lstrip("*").strip()
-        elif re.match(r"^2\.", clean_line) and i + 1 < len(lines):
-            meets_requirements = lines[i + 1].lstrip("*").strip()
-        elif re.match(r"^3\.", clean_line) and i + 1 < len(lines):
-            age_confirmed = lines[i + 1].lstrip("*").strip()
+        if "in game username" in name:
+            ign = value
+        elif "meet our application requirements" in name:
+            meets_requirements = value
+        elif "over the age of" in name or "age" in name:
+            age_confirmed = value
 
     return applicant_id, ign, meets_requirements, age_confirmed
+
 
 
 async def handle_new_application(ticket_message: discord.Message):
