@@ -34,6 +34,7 @@ APPLICATIONS_FILE = "applications.json"
 APPLICATION_CATEGORY_ID = 1453607606089285653
 TICKET_BOT_ID = 718493970652594217
 OFFICER_ROLE_ID = 1523733774314246246
+OFFICER_REVIEW_ROLE_ID = 1523733774314246246
 LOG_CHANNEL_ID = 1523740893755211786
 SQB_REGION_CHANNEL_ID = 1509920425952678051
 
@@ -133,6 +134,10 @@ intents.message_content = True   # ADD THIS LINE
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+
+
+def has_officer_permission(member: discord.Member) -> bool:
+    return any(role.id == OFFICER_REVIEW_ROLE_ID for role in member.roles)
 
 
 def has_required_role():
@@ -839,7 +844,7 @@ async def handle_new_application(ticket_message: discord.Message):
         officer_role_mention = f"<@&{OFFICER_ROLE_ID}>"
         view = ApplicationView()
         mgmt_message = await channel.send(
-            content=f"{officer_role_mention} — please review this application.",
+            content=f"",
             embed=embed,
             view=view
         )
@@ -867,19 +872,32 @@ async def handle_new_application(ticket_message: discord.Message):
 
 # ==================== APPLICATION BUTTON LOGIC ====================
 
+OFFICER_REVIEW_ROLE_ID = 1523733774314246246
+
+def has_officer_permission(member: discord.Member) -> bool:
+    return any(role.id == OFFICER_REVIEW_ROLE_ID for role in member.roles)
+
+
 class AcceptConfirmModal(discord.ui.Modal, title="Confirm Acceptance"):
     def __init__(self, message_id: int):
         super().__init__()
         self.message_id = message_id
 
     confirm = discord.ui.TextInput(
-        label='Do you want to accept this application? (Yes/No)',
+        label='Accept this application? (Yes/No)',
         placeholder="Yes or No",
         required=True,
         max_length=5
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not has_officer_permission(interaction.user):
+            await interaction.response.send_message(
+                "❌ You don't have permission to do this.",
+                ephemeral=True
+            )
+            return
+
         answer = self.confirm.value.strip().lower()
         if answer != "yes":
             await interaction.response.send_message("Cancelled — no changes made.", ephemeral=True)
@@ -1007,13 +1025,20 @@ class RejectConfirmModal(discord.ui.Modal, title="Confirm Rejection"):
         self.message_id = message_id
 
     confirm = discord.ui.TextInput(
-        label='Do you want to reject this application? (Yes/No)',
+        label='Reject this application? (Yes/No)',
         placeholder="Yes or No",
         required=True,
         max_length=5
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not has_officer_permission(interaction.user):
+            await interaction.response.send_message(
+                "❌ You don't have permission to do this.",
+                ephemeral=True
+            )
+            return
+
         answer = self.confirm.value.strip().lower()
         if answer != "yes":
             await interaction.response.send_message("Cancelled — no changes made.", ephemeral=True)
@@ -1095,6 +1120,13 @@ class EditApplicationModal(discord.ui.Modal, title="Edit Application"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not has_officer_permission(interaction.user):
+            await interaction.response.send_message(
+                "❌ You don't have permission to do this.",
+                ephemeral=True
+            )
+            return
+
         apps = load_applications()
         record = apps.get(str(self.message_id))
         if not record or record["resolved"]:
@@ -1139,6 +1171,7 @@ async def send_application_log(guild: discord.Guild, record: dict, handled_by_id
     embed.set_footer(text="NERFD™ HQ Applications", icon_url=THUMBNAIL_URL)
 
     await channel.send(embed=embed)
+
 
 
 # ==================== SLASH COMMANDS ====================
