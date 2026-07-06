@@ -4,6 +4,7 @@ from discord.ext import commands
 import json
 import os
 from urllib.parse import quote
+import re
 
 from dotenv import load_dotenv
 
@@ -20,6 +21,27 @@ TEAMS = ["NERFD", "N3RFD"]
 
 DATA_FILE = "team_data.json"
 ROSTER_MSG_FILE = "roster_messages.json"
+
+APPLICATIONS_FILE = "applications.json"
+
+APPLICATION_CATEGORY_ID = 1453607606089285653
+TICKET_BOT_ID = 718493970652594217
+OFFICER_ROLE_ID = 1523733774314246246
+LOG_CHANNEL_ID = 1523740893755211786
+SQB_REGION_CHANNEL_ID = 1509920425952678051
+
+PRIVATE_ROLE_ID = 1361383932167196815
+NERFD_SQUAD_ROLE_ID = 1460059995570962533
+N3RFD_SQUAD_ROLE_ID = 1460059961169023039
+VERIFIED_WT_ROLE_ID = 1523663455830147122
+SQB_RESERVE_ROLE_ID = 1400809049880006749
+
+THUMBNAIL_URL = "https://cdn.discordapp.com/avatars/1514660834398175355/604b0c8d44629b88f95186555f8b2635.webp?size=1024"
+
+APP_COLOR_PENDING = discord.Color.from_str("#2985CC")
+APP_COLOR_ACCEPTED = discord.Color.from_str("#77B255")
+APP_COLOR_REJECTED = discord.Color.from_str("#E91E3A")
+
 
 # ==================== DATA HANDLING ====================
 
@@ -79,6 +101,23 @@ def save_roster_messages(msg_map):
     with open(ROSTER_MSG_FILE, "w", encoding="utf-8") as f:
         json.dump(msg_map, f, indent=2)
 
+def load_applications():
+    if not os.path.exists(APPLICATIONS_FILE):
+        return {}
+    with open(APPLICATIONS_FILE, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    if not content:
+        return {}
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {}
+
+def save_applications(data):
+    with open(APPLICATIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
 
 # ==================== BOT SETUP ====================
 
@@ -117,12 +156,12 @@ def build_team_embed(team: str, entries: list) -> discord.Embed:
     for entry in entries:
         mention = f"<@{entry['discord_id']}>"
         link = f"https://warthunder.com/en/community/userinfo/?nick={quote(entry['username'])}"
-        lines.append(f"{mention} — [{entry['username']}]({link})")
-
+        lines.append(f"{mention} — `{entry['username']}` [[+]]({link})")
 
     embed.description = "\n".join(lines)
     embed.set_footer(text=f"Total members: {len(entries)}")
     return embed
+
 
 
 async def update_roster_embeds(guild: discord.Guild):
@@ -601,8 +640,443 @@ class RegisterButtonView(discord.ui.View):
         )
         await interaction.response.send_message(embed=embed, view=TeamSelectView(), ephemeral=True)
 
+# =================== BUILD APPLICATION EMBED =================
 
-# ==================== SLASH COMMAND ====================
+def build_application_embed(squad, applicant_id, ign, meets_requirements, age_confirmed, status="pending", handled_by=None):
+    if status == "accepted":
+        color = APP_COLOR_ACCEPTED
+        title = "Application Accepted"
+    elif status == "rejected":
+        color = APP_COLOR_REJECTED
+        title = "Application Rejected"
+    else:
+        color = APP_COLOR_PENDING
+        title = "Application Pending"
+
+    embed = discord.Embed(title=title, color=color)
+    embed.add_field(name="Applicant", value=f"<@{applicant_id}>", inline=False)
+    embed.add_field(name="Applying For", value=squad, inline=True)
+    embed.add_field(name="In-Game Username", value=ign, inline=True)
+    embed.add_field(name="Meets Requirements?", value=meets_requirements, inline=True)
+    embed.add_field(name="Over 16?", value=age_confirmed, inline=True)
+
+    if handled_by:
+        embed.add_field(name="Handled By", value=f"<@{handled_by}>", inline=False)
+
+    embed.set_thumbnail(url=THUMBNAIL_URL)
+    embed.set_footer(text="NERFD™ HQ Applications", icon_url=THUMBNAIL_URL)
+    return embed
+
+# =================== BUILD APPLICATION EMBED BUTTONS =================
+
+class ApplicationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green, emoji="✅", custom_id="app_accept")
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        apps = load_applications()
+        record = apps.get(str(interaction.message.id))
+        if not record or record["resolved"]:
+            await interaction.response.send_message("⚠️ This application has already been resolved.", ephemeral=True)
+            return
+        await interaction.response.send_modal(AcceptConfirmModal(interaction.message.id))
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, emoji="❌", custom_id="app_reject")
+    async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        apps = load_applications()
+        record = apps.get(str(interaction.message.id))
+        if not record or record["resolved"]:
+            await interaction.response.send_message("⚠️ This application has already been resolved.", ephemeral=True)
+            return
+        await interaction.response.send_modal(RejectConfirmModal(interaction.message.id))
+
+    @discord.ui.button(label="Edit Application", style=discord.ButtonStyle.blurple, custom_id="app_edit")
+    async def edit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        apps = load_applications()
+        record = apps.get(str(interaction.message.id))
+        if not record:
+            await interaction.response.send_message("⚠️ Could not find application data.", ephemeral=True)
+            return
+        if record["resolved"]:
+            await interaction.response.send_message("⚠️ This application has already been resolved.", ephemeral=True)
+            return
+        await interaction.response.send_modal(EditApplicationModal(interaction.message.id, record["ign"]))
+
+
+# =================== DETECTING TICKETS =================
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.id == TICKET_BOT_ID and message.guild:
+        channel = message.channel
+        if channel.category_id == APPLICATION_CATEGORY_ID:
+            if message.embeds and len(message.embeds) >= 2:
+                await handle_new_application(message)
+    await bot.process_commands(message)
+
+
+def parse_squad_from_channel_name(name: str) -> str | None:
+    name_lower = name.lower()
+    if name_lower.startswith("nerfd-application"):
+        return "NERFD"
+    elif name_lower.startswith("n3rfd-application"):
+        return "N3RFD"
+    return None
+
+
+def parse_ticket_embeds(embeds: list[discord.Embed]):
+    first_embed = embeds[0]
+    second_embed = embeds[1]
+
+    applicant_id = None
+    if first_embed.description:
+        match = re.search(r"<@!?(\d+)>", first_embed.description)
+        if match:
+            applicant_id = int(match.group(1))
+
+    ign = None
+    meets_requirements = None
+    age_confirmed = None
+
+    text = second_embed.description or ""
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+    for i, line in enumerate(lines):
+        # Match "1." or "**1.**" style prefixes, ignoring markdown bold
+        clean_line = line.lstrip("*").strip()
+        if re.match(r"^1\.", clean_line) and i + 1 < len(lines):
+            ign = lines[i + 1].lstrip("*").strip()
+        elif re.match(r"^2\.", clean_line) and i + 1 < len(lines):
+            meets_requirements = lines[i + 1].lstrip("*").strip()
+        elif re.match(r"^3\.", clean_line) and i + 1 < len(lines):
+            age_confirmed = lines[i + 1].lstrip("*").strip()
+
+    return applicant_id, ign, meets_requirements, age_confirmed
+
+
+async def handle_new_application(ticket_message: discord.Message):
+    channel = ticket_message.channel
+    squad = parse_squad_from_channel_name(channel.name)
+    if squad is None:
+        print(f"⚠️ Could not determine squad from channel name: {channel.name}")
+        return
+
+    parsed = parse_ticket_embeds(ticket_message.embeds)
+    if parsed is None:
+        return
+    applicant_id, ign, meets_requirements, age_confirmed = parsed
+
+    if applicant_id is None or ign is None:
+        print(f"⚠️ Failed to parse ticket data in {channel.name}")
+        return
+
+    embed = build_application_embed(
+        squad=squad,
+        applicant_id=applicant_id,
+        ign=ign,
+        meets_requirements=meets_requirements,
+        age_confirmed=age_confirmed,
+        status="pending"
+    )
+
+    officer_role_mention = f"<@&{OFFICER_ROLE_ID}>"
+    view = ApplicationView()
+    mgmt_message = await channel.send(
+        content=f"{officer_role_mention} — please review this application.",
+        embed=embed,
+        view=view
+    )
+
+    apps = load_applications()
+    apps[str(mgmt_message.id)] = {
+        "applicant_id": applicant_id,
+        "squad": squad,
+        "ign": ign,
+        "meets_requirements": meets_requirements or "Unknown",
+        "age_confirmed": age_confirmed or "Unknown",
+        "channel_id": channel.id,
+        "resolved": False
+    }
+    save_applications(apps)
+
+# ==================== APPLICATION BUTTON LOGIC ====================
+
+class AcceptConfirmModal(discord.ui.Modal, title="Confirm Acceptance"):
+    def __init__(self, message_id: int):
+        super().__init__()
+        self.message_id = message_id
+
+    confirm = discord.ui.TextInput(
+        label='Do you want to accept this application? (Yes/No)',
+        placeholder="Yes or No",
+        required=True,
+        max_length=5
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        answer = self.confirm.value.strip().lower()
+        if answer != "yes":
+            await interaction.response.send_message("Cancelled — no changes made.", ephemeral=True)
+            return
+
+        apps = load_applications()
+        record = apps.get(str(self.message_id))
+        if not record or record["resolved"]:
+            await interaction.response.send_message("⚠️ Application no longer available.", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        applicant_id = record["applicant_id"]
+        squad = record["squad"]
+
+        member = guild.get_member(applicant_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(applicant_id)
+            except discord.NotFound:
+                member = None
+
+        # Determine roles to assign
+        role_ids = [PRIVATE_ROLE_ID, VERIFIED_WT_ROLE_ID]
+        if squad == "NERFD":
+            role_ids += [NERFD_SQUAD_ROLE_ID, SQB_RESERVE_ROLE_ID]
+        else:
+            role_ids += [N3RFD_SQUAD_ROLE_ID]
+
+        assigned = []
+        already_had = []
+
+        if member:
+            for rid in role_ids:
+                role = guild.get_role(rid)
+                if role is None:
+                    continue
+                if role in member.roles:
+                    already_had.append(role.name)
+                else:
+                    try:
+                        await member.add_roles(role, reason=f"Application accepted by {interaction.user}")
+                        assigned.append(role.name)
+                    except discord.HTTPException:
+                        pass
+
+        # Update record + save to team data
+        record["resolved"] = True
+        record["handled_by"] = interaction.user.id
+        record["result"] = "accepted"
+        apps[str(self.message_id)] = record
+        save_applications(apps)
+
+        data = load_data()
+        data[squad].append({
+            "discord_id": applicant_id,
+            "discord_name": str(member) if member else str(applicant_id),
+            "username": record["ign"],
+            "team": squad
+        })
+        save_data(data)
+        await update_roster_embeds(guild)
+
+        # Update embed
+        new_embed = build_application_embed(
+            squad=squad,
+            applicant_id=applicant_id,
+            ign=record["ign"],
+            meets_requirements=record["meets_requirements"],
+            age_confirmed=record["age_confirmed"],
+            status="accepted",
+            handled_by=interaction.user.id
+        )
+        await interaction.message.edit(embed=new_embed, view=None)
+
+        # Ephemeral reminder to officer
+        role_summary = ""
+        if assigned:
+            role_summary += f"**Assigned:** {', '.join(assigned)}\n"
+        if already_had:
+            role_summary += f"**Already had:** {', '.join(already_had)}\n"
+        if not member:
+            role_summary = "⚠️ Could not find member in server to assign roles.\n"
+
+        await interaction.response.send_message(
+            f"✅ Application accepted!\n\n{role_summary}\n"
+            f"🔔 Please remember to also **accept {record['ign']} in-game** or via the WT Assistant App.\n"
+            f"📪 Please close this ticket using `/ticket close (reason)`.",
+            ephemeral=True
+        )
+
+        # DM applicant
+        if member:
+            try:
+                dm_embed = discord.Embed(
+                    title="🎉 Application Accepted!",
+                    description=(
+                        f"Congratulations! Your application to join **{squad}** has been **accepted**.\n"
+                        f"You will be accepted in-game shortly. Happy hunting! 🎯"
+                    ),
+                    color=APP_COLOR_ACCEPTED
+                )
+                dm_embed.add_field(name="In-Game Username", value=record["ign"], inline=True)
+                dm_embed.add_field(name="Meets Requirements?", value=record["meets_requirements"], inline=True)
+                dm_embed.add_field(name="Over 16?", value=record["age_confirmed"], inline=True)
+                if squad == "NERFD":
+                    dm_embed.add_field(
+                        name="Next Step",
+                        value=f"Please visit <#{SQB_REGION_CHANNEL_ID}> to select your SQB region.",
+                        inline=False
+                    )
+                dm_embed.set_thumbnail(url=THUMBNAIL_URL)
+                dm_embed.set_footer(text="NERFD™ HQ Applications", icon_url=THUMBNAIL_URL)
+                await member.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass
+
+        # Log
+        await send_application_log(guild, record, interaction.user.id, "accepted")
+
+
+class RejectConfirmModal(discord.ui.Modal, title="Confirm Rejection"):
+    def __init__(self, message_id: int):
+        super().__init__()
+        self.message_id = message_id
+
+    confirm = discord.ui.TextInput(
+        label='Do you want to reject this application? (Yes/No)',
+        placeholder="Yes or No",
+        required=True,
+        max_length=5
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        answer = self.confirm.value.strip().lower()
+        if answer != "yes":
+            await interaction.response.send_message("Cancelled — no changes made.", ephemeral=True)
+            return
+
+        apps = load_applications()
+        record = apps.get(str(self.message_id))
+        if not record or record["resolved"]:
+            await interaction.response.send_message("⚠️ Application no longer available.", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        applicant_id = record["applicant_id"]
+        squad = record["squad"]
+
+        record["resolved"] = True
+        record["handled_by"] = interaction.user.id
+        record["result"] = "rejected"
+        apps[str(self.message_id)] = record
+        save_applications(apps)
+
+        new_embed = build_application_embed(
+            squad=squad,
+            applicant_id=applicant_id,
+            ign=record["ign"],
+            meets_requirements=record["meets_requirements"],
+            age_confirmed=record["age_confirmed"],
+            status="rejected",
+            handled_by=interaction.user.id
+        )
+        await interaction.message.edit(embed=new_embed, view=None)
+
+        await interaction.response.send_message(
+            f"❌ Application rejected.\n\n"
+            f"⚠️ Please do **not** accept {record['ign']} in-game or via the WT Assistant App.\n"
+            f"📪 Please close this ticket using `/ticket close (reason)`.",
+            ephemeral=True
+        )
+
+        member = guild.get_member(applicant_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(applicant_id)
+            except discord.NotFound:
+                member = None
+
+        if member:
+            try:
+                dm_embed = discord.Embed(
+                    title="Application Update",
+                    description=(
+                        f"We're sorry to inform you that your application to join **{squad}** "
+                        f"has been **rejected**."
+                    ),
+                    color=APP_COLOR_REJECTED
+                )
+                dm_embed.add_field(name="In-Game Username", value=record["ign"], inline=True)
+                dm_embed.add_field(name="Meets Requirements?", value=record["meets_requirements"], inline=True)
+                dm_embed.add_field(name="Over 16?", value=record["age_confirmed"], inline=True)
+                dm_embed.set_thumbnail(url=THUMBNAIL_URL)
+                dm_embed.set_footer(text="NERFD™ HQ Applications", icon_url=THUMBNAIL_URL)
+                await member.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass
+
+        await send_application_log(guild, record, interaction.user.id, "rejected")
+
+
+class EditApplicationModal(discord.ui.Modal, title="Edit Application"):
+    def __init__(self, message_id: int, current_ign: str):
+        super().__init__()
+        self.message_id = message_id
+        self.ign_input.default = current_ign
+
+    ign_input = discord.ui.TextInput(
+        label="In-Game Username",
+        required=True,
+        max_length=64
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        apps = load_applications()
+        record = apps.get(str(self.message_id))
+        if not record or record["resolved"]:
+            await interaction.response.send_message("⚠️ Application no longer available.", ephemeral=True)
+            return
+
+        record["ign"] = self.ign_input.value.strip()
+        apps[str(self.message_id)] = record
+        save_applications(apps)
+
+        new_embed = build_application_embed(
+            squad=record["squad"],
+            applicant_id=record["applicant_id"],
+            ign=record["ign"],
+            meets_requirements=record["meets_requirements"],
+            age_confirmed=record["age_confirmed"],
+            status="pending"
+        )
+        await interaction.message.edit(embed=new_embed, view=ApplicationView())
+        await interaction.response.send_message("✅ Application updated.", ephemeral=True)
+
+
+async def send_application_log(guild: discord.Guild, record: dict, handled_by_id: int, result: str):
+    channel = guild.get_channel(LOG_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await guild.fetch_channel(LOG_CHANNEL_ID)
+        except discord.NotFound:
+            return
+
+    color = APP_COLOR_ACCEPTED if result == "accepted" else APP_COLOR_REJECTED
+    title = "📄 Application Accepted" if result == "accepted" else "📄 Application Rejected"
+
+    embed = discord.Embed(title=title, color=color)
+    embed.add_field(name="Applicant", value=f"<@{record['applicant_id']}>", inline=False)
+    embed.add_field(name="Squad", value=record["squad"], inline=True)
+    embed.add_field(name="In-Game Username", value=record["ign"], inline=True)
+    embed.add_field(name="Meets Requirements?", value=record["meets_requirements"], inline=True)
+    embed.add_field(name="Over 16?", value=record["age_confirmed"], inline=True)
+    embed.add_field(name="Handled By", value=f"<@{handled_by_id}>", inline=False)
+    embed.set_thumbnail(url=THUMBNAIL_URL)
+    embed.set_footer(text="NERFD™ HQ Applications", icon_url=THUMBNAIL_URL)
+
+    await channel.send(embed=embed)
+
+
+# ==================== SLASH COMMANDS ====================
 
 @bot.tree.command(name="register", description="Post the team registration message")
 @has_required_role()
@@ -705,6 +1179,7 @@ async def remove_error(interaction: discord.Interaction, error: app_commands.App
 @bot.event
 async def on_ready():
     bot.add_view(RegisterButtonView())
+    bot.add_view(ApplicationView())
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s).")
