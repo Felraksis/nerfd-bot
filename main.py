@@ -807,6 +807,11 @@ async def handle_new_application(ticket_message: discord.Message):
         logging.warning(f"⚠️ Could not determine squad from channel name: {channel.name}")
         return
 
+    for i, e in enumerate(ticket_message.embeds):
+        logging.info(f"Embed[{i}] title={e.title!r} description={e.description!r}")
+        for f in e.fields:
+            logging.info(f"Embed[{i}] field: name={f.name!r} value={f.value!r} inline={f.inline}")
+
     parsed = parse_ticket_embeds(ticket_message.embeds)
     logging.info(f"parse_ticket_embeds() returned: {parsed!r}")
     if parsed is None:
