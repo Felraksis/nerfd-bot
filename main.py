@@ -799,48 +799,67 @@ def parse_ticket_embeds(embeds: list[discord.Embed]):
 
 async def handle_new_application(ticket_message: discord.Message):
     channel = ticket_message.channel
+    logging.info(f"handle_new_application START | message_id={ticket_message.id} | channel={channel.name}")
+
     squad = parse_squad_from_channel_name(channel.name)
+    logging.info(f"Parsed squad = {squad!r} from channel name {channel.name!r}")
     if squad is None:
-        print(f"⚠️ Could not determine squad from channel name: {channel.name}")
+        logging.warning(f"⚠️ Could not determine squad from channel name: {channel.name}")
         return
 
     parsed = parse_ticket_embeds(ticket_message.embeds)
+    logging.info(f"parse_ticket_embeds() returned: {parsed!r}")
     if parsed is None:
+        logging.warning(f"⚠️ parse_ticket_embeds returned None for channel {channel.name}")
         return
     applicant_id, ign, meets_requirements, age_confirmed = parsed
+    logging.info(
+        f"Parsed application data | applicant_id={applicant_id} | ign={ign!r} | "
+        f"meets_requirements={meets_requirements!r} | age_confirmed={age_confirmed!r}"
+    )
 
     if applicant_id is None or ign is None:
-        print(f"⚠️ Failed to parse ticket data in {channel.name}")
+        logging.warning(f"⚠️ Failed to parse ticket data in {channel.name} (applicant_id or ign missing)")
         return
 
-    embed = build_application_embed(
-        squad=squad,
-        applicant_id=applicant_id,
-        ign=ign,
-        meets_requirements=meets_requirements,
-        age_confirmed=age_confirmed,
-        status="pending"
-    )
+    try:
+        embed = build_application_embed(
+            squad=squad,
+            applicant_id=applicant_id,
+            ign=ign,
+            meets_requirements=meets_requirements,
+            age_confirmed=age_confirmed,
+            status="pending"
+        )
 
-    officer_role_mention = f"<@&{OFFICER_ROLE_ID}>"
-    view = ApplicationView()
-    mgmt_message = await channel.send(
-        content=f"{officer_role_mention} — please review this application.",
-        embed=embed,
-        view=view
-    )
+        officer_role_mention = f"<@&{OFFICER_ROLE_ID}>"
+        view = ApplicationView()
+        mgmt_message = await channel.send(
+            content=f"{officer_role_mention} — please review this application.",
+            embed=embed,
+            view=view
+        )
+        logging.info(f"Sent application review embed | mgmt_message_id={mgmt_message.id}")
 
-    apps = load_applications()
-    apps[str(mgmt_message.id)] = {
-        "applicant_id": applicant_id,
-        "squad": squad,
-        "ign": ign,
-        "meets_requirements": meets_requirements or "Unknown",
-        "age_confirmed": age_confirmed or "Unknown",
-        "channel_id": channel.id,
-        "resolved": False
-    }
-    save_applications(apps)
+        apps = load_applications()
+        apps[str(mgmt_message.id)] = {
+            "applicant_id": applicant_id,
+            "squad": squad,
+            "ign": ign,
+            "meets_requirements": meets_requirements or "Unknown",
+            "age_confirmed": age_confirmed or "Unknown",
+            "channel_id": channel.id,
+            "resolved": False
+        }
+        save_applications(apps)
+        logging.info(f"Saved application data for mgmt_message_id={mgmt_message.id} | {apps[str(mgmt_message.id)]}")
+
+    except Exception:
+        logging.exception(f"❌ handle_new_application failed while sending/saving for channel {channel.name}")
+        return
+
+    logging.info(f"handle_new_application COMPLETE | message_id={ticket_message.id}")
+
 
 # ==================== APPLICATION BUTTON LOGIC ====================
 
