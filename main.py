@@ -5,6 +5,13 @@ import json
 import os
 from urllib.parse import quote
 import re
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)-8s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 from dotenv import load_dotenv
 
@@ -710,12 +717,45 @@ class ApplicationView(discord.ui.View):
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.id == TICKET_BOT_ID and message.guild:
-        channel = message.channel
-        if channel.category_id == APPLICATION_CATEGORY_ID:
-            if message.embeds and len(message.embeds) >= 2:
-                await handle_new_application(message)
+    logging.info(
+        f"on_message fired | author={message.author} (id={message.author.id}) | "
+        f"bot={message.author.bot} | guild={message.guild} | "
+        f"channel={message.channel} (id={message.channel.id}) | "
+        f"content={message.content!r} | embeds={len(message.embeds)}"
+    )
+
+    if message.author.id == TICKET_BOT_ID:
+        logging.info(f"Message is from TICKET_BOT_ID ({TICKET_BOT_ID}) ✅")
+
+        if not message.guild:
+            logging.info("Message has no guild (DM?) — skipping")
+        else:
+            channel = message.channel
+            category_id = getattr(channel, "category_id", None)
+            logging.info(
+                f"Channel category_id={category_id} | expected={APPLICATION_CATEGORY_ID} | "
+                f"match={category_id == APPLICATION_CATEGORY_ID}"
+            )
+
+            if category_id == APPLICATION_CATEGORY_ID:
+                logging.info(f"Category matches. Embed count = {len(message.embeds)}")
+                if message.embeds and len(message.embeds) >= 2:
+                    logging.info("Embed count sufficient — calling handle_new_application()")
+                    await handle_new_application(message)
+                else:
+                    logging.info("Embed count insufficient — skipping handle_new_application()")
+            else:
+                logging.info("Category does not match — skipping")
+    else:
+        logging.debug(f"Ignoring message from non-ticket-bot author (id={message.author.id})")
+
     await bot.process_commands(message)
+    logging.info(
+        f"is_webhook={message.webhook_id is not None} | webhook_id={message.webhook_id} | "
+        f"author_id={message.author.id} | TICKET_BOT_ID={TICKET_BOT_ID}"
+    )
+
+
 
 
 def parse_squad_from_channel_name(name: str) -> str | None:
@@ -1180,6 +1220,7 @@ async def remove_error(interaction: discord.Interaction, error: app_commands.App
 
 @bot.event
 async def on_ready():
+
     bot.add_view(RegisterButtonView())
     bot.add_view(ApplicationView())
     try:
@@ -1188,6 +1229,7 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    logging.info(f"Connected to {len(bot.guilds)} guild(s)")
 
 
 
