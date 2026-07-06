@@ -34,7 +34,6 @@ APPLICATIONS_FILE = "applications.json"
 APPLICATION_CATEGORY_ID = 1453607606089285653
 TICKET_BOT_ID = 718493970652594217
 OFFICER_ROLE_ID = 1395796314150666380
-OFFICER_REVIEW_ROLE_ID = 1395796314150666380
 LOG_CHANNEL_ID = 1523740893755211786
 SQB_REGION_CHANNEL_ID = 1509920425952678051
 
@@ -137,7 +136,23 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 def has_officer_permission(member: discord.Member) -> bool:
-    return any(role.id == OFFICER_REVIEW_ROLE_ID for role in member.roles)
+    return any(role.id == OFFICER_ROLE_ID for role in getattr(member, "roles", []))
+
+
+async def check_officer_permission(interaction: discord.Interaction) -> bool:
+    """Fetches a fresh Member object and checks for the officer role."""
+    guild = interaction.guild
+    if guild is None:
+        return False
+
+    member = guild.get_member(interaction.user.id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(interaction.user.id)
+        except discord.NotFound:
+            return False
+
+    return has_officer_permission(member)
 
 
 def has_required_role():
@@ -323,7 +338,7 @@ class ConfirmDeleteModal(discord.ui.Modal, title="Confirm Deletion"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        if self.confirm_text.value.strip().lower() != "confirm":
+        if not await check_officer_permission(interaction):
             await interaction.response.send_message(
                 "❌ Confirmation text did not match. Deletion cancelled.", ephemeral=True
             )
@@ -872,12 +887,6 @@ async def handle_new_application(ticket_message: discord.Message):
 
 # ==================== APPLICATION BUTTON LOGIC ====================
 
-OFFICER_REVIEW_ROLE_ID = 1523733774314246246
-
-def has_officer_permission(member: discord.Member) -> bool:
-    return any(role.id == OFFICER_REVIEW_ROLE_ID for role in member.roles)
-
-
 class AcceptConfirmModal(discord.ui.Modal, title="Confirm Acceptance"):
     def __init__(self, message_id: int):
         super().__init__()
@@ -891,7 +900,7 @@ class AcceptConfirmModal(discord.ui.Modal, title="Confirm Acceptance"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not has_officer_permission(interaction.user):
+        if not await check_officer_permission(interaction):
             await interaction.response.send_message(
                 "❌ You don't have permission to do this.",
                 ephemeral=True
@@ -1032,7 +1041,7 @@ class RejectConfirmModal(discord.ui.Modal, title="Confirm Rejection"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not has_officer_permission(interaction.user):
+        if not await check_officer_permission(interaction):
             await interaction.response.send_message(
                 "❌ You don't have permission to do this.",
                 ephemeral=True
@@ -1120,7 +1129,7 @@ class EditApplicationModal(discord.ui.Modal, title="Edit Application"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not has_officer_permission(interaction.user):
+        if not await check_officer_permission(interaction):
             await interaction.response.send_message(
                 "❌ You don't have permission to do this.",
                 ephemeral=True
