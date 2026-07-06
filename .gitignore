@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 venv/
+applications.json
+roster_messages.json
+team_data.json
