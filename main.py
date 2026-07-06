@@ -170,32 +170,64 @@ def has_required_role():
 
 # ==================== ROSTER EMBED BUILDING ====================
 
-def build_team_embed(team: str, entries: list) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"📋 Team {team} Roster",
-        color=discord.Color.blue() if team == "NERFD" else discord.Color.purple()
-    )
+MAX_DESC_LENGTH = 4000  # safe margin under 4096
+MAX_LINES_PER_EMBED = 40  # optional extra safety, tweak as needed
+
+def build_team_embeds(team: str, entries: list) -> list[discord.Embed]:
+    color = discord.Color.blue() if team == "NERFD" else discord.Color.purple()
 
     if not entries:
-        embed.description = "*No members registered yet.*"
-        return embed
+        embed = discord.Embed(
+            title=f"📋 Team {team} Roster",
+            description="*No members registered yet.*",
+            color=color
+        )
+        return [embed]
 
     lines = []
-
     for entry in entries:
         mention = f"<@{entry['discord_id']}>"
         link = f"https://warthunder.com/en/community/userinfo/?nick={quote(entry['username'])}"
         lines.append(f"{mention} — `{entry['username']}` [[+]]({link})")
 
-    embed.description = "\n".join(lines)
-    embed.set_footer(text=f"Total members: {len(entries)}")
-    return embed
+    # Chunk lines into groups that fit within MAX_DESC_LENGTH and MAX_LINES_PER_EMBED
+    chunks = []
+    current_chunk = []
+    current_len = 0
 
+    for line in lines:
+        line_len = len(line) + 1  # +1 for newline
+        if (current_len + line_len > MAX_DESC_LENGTH) or (len(current_chunk) >= MAX_LINES_PER_EMBED):
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_len = 0
+        current_chunk.append(line)
+        current_len += line_len
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    embeds = []
+    total_pages = len(chunks)
+    for i, chunk in enumerate(chunks, start=1):
+        title = f"📋 Team {team} Roster"
+        if total_pages > 1:
+            title += f" (Page {i}/{total_pages})"
+
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(chunk),
+            color=color
+        )
+        embed.set_footer(text=f"Total members: {len(entries)}")
+        embeds.append(embed)
+
+    return embeds
 
 
 async def update_roster_embeds(guild: discord.Guild):
     data = load_data()
-    msg_map = load_roster_messages()
+    msg_map = load_roster_messages()  # now: {"NERFD": [id1, id2, ...], "N3RFD": [id1, ...]}
 
     channel = guild.get_channel(ROSTER_CHANNEL_ID)
     if channel is None:
@@ -206,23 +238,43 @@ async def update_roster_embeds(guild: discord.Guild):
             return
 
     for team in TEAMS:
-        embed = build_team_embed(team, data[team])
-        msg_id = msg_map.get(team)
+        embeds = build_team_embeds(team, data[team])
+        existing_ids = msg_map.get(team, [])
 
-        message = None
-        if msg_id:
-            try:
-                message = await channel.fetch_message(msg_id)
-            except discord.NotFound:
-                message = None
+        # Normalize: if old format was a single int, wrap it in a list
+        if isinstance(existing_ids, int):
+            existing_ids = [existing_ids]
 
-        if message:
-            await message.edit(embed=embed)
-        else:
-            new_msg = await channel.send(embed=embed)
-            msg_map[team] = new_msg.id
+        new_ids = []
+
+        for i, embed in enumerate(embeds):
+            message = None
+            if i < len(existing_ids):
+                try:
+                    message = await channel.fetch_message(existing_ids[i])
+                except discord.NotFound:
+                    message = None
+
+            if message:
+                await message.edit(embed=embed)
+                new_ids.append(message.id)
+            else:
+                new_msg = await channel.send(embed=embed)
+                new_ids.append(new_msg.id)
+
+        # If the new roster has fewer pages than before, delete the leftover old messages
+        if len(existing_ids) > len(embeds):
+            for leftover_id in existing_ids[len(embeds):]:
+                try:
+                    leftover_msg = await channel.fetch_message(leftover_id)
+                    await leftover_msg.delete()
+                except discord.NotFound:
+                    pass
+
+        msg_map[team] = new_ids
 
     save_roster_messages(msg_map)
+
 
 
 # ==================== MODAL ====================
@@ -435,9 +487,10 @@ class EntryActionView(discord.ui.View):
 
 class EntrySelect(discord.ui.Select):
     """Lists entries for the chosen team; selecting one shows action buttons."""
-    def __init__(self, team: str, entries: list):
+    def __init__(self, team: str, entries: list, chunk_idx: int = 0):
         self.team = team
         self.entries = entries
+        self.chunk_idx = chunk_idx
 
         options = []
         for idx, entry in enumerate(entries):
@@ -449,7 +502,12 @@ class EntrySelect(discord.ui.Select):
                 )
             )
 
-        super().__init__(placeholder="Select an entry...", options=options, min_values=1, max_values=1)
+        super().__init__(
+            placeholder=f"Select an entry... ({chunk_idx + 1})" if chunk_idx > 0 else "Select an entry...",
+            options=options,
+            min_values=1,
+            max_values=1
+        )
 
     async def callback(self, interaction: discord.Interaction):
         idx = int(self.values[0])
@@ -472,7 +530,13 @@ class EntrySelect(discord.ui.Select):
 class EntrySelectView(discord.ui.View):
     def __init__(self, team: str, entries: list):
         super().__init__(timeout=120)
-        self.add_item(EntrySelect(team, entries))
+        
+        # Split into chunks of 25
+        chunks = [entries[i:i+25] for i in range(0, len(entries), 25)]
+        
+        for chunk_idx, chunk in enumerate(chunks):
+            self.add_item(EntrySelect(team, chunk, chunk_idx))
+
 
 
 class TeamPickSelect(discord.ui.Select):
@@ -775,9 +839,6 @@ async def on_message(message: discord.Message):
         f"author_id={message.author.id} | TICKET_BOT_ID={TICKET_BOT_ID}"
     )
 
-
-
-
 def parse_squad_from_channel_name(name: str) -> str | None:
     name_lower = name.lower()
     if name_lower.startswith("nerfd-application"):
@@ -785,7 +846,6 @@ def parse_squad_from_channel_name(name: str) -> str | None:
     elif name_lower.startswith("n3rfd-application"):
         return "N3RFD"
     return None
-
 
 def parse_ticket_embeds(embeds: list[discord.Embed]):
     first_embed = embeds[0]
@@ -814,7 +874,23 @@ def parse_ticket_embeds(embeds: list[discord.Embed]):
 
     return applicant_id, ign, meets_requirements, age_confirmed
 
-
+def check_user_in_roster(applicant_id: int, squad: str) -> bool | None:
+    """Check if user is already in the roster. Returns True if found, False if not, None on error."""
+    try:
+        roster = load_roster()
+        if squad not in roster:
+            return False
+        
+        for member in roster[squad]:
+            if member.get("applicant_id") == applicant_id:
+                logging.info(f"User {applicant_id} found in {squad} roster")
+                return True
+        
+        logging.info(f"User {applicant_id} NOT found in {squad} roster")
+        return False
+    except Exception:
+        logging.exception(f"Error checking roster for user {applicant_id} in squad {squad}")
+        return None
 
 async def handle_new_application(ticket_message: discord.Message):
     channel = ticket_message.channel
@@ -846,6 +922,10 @@ async def handle_new_application(ticket_message: discord.Message):
         logging.warning(f"⚠️ Failed to parse ticket data in {channel.name} (applicant_id or ign missing)")
         return
 
+    # Check if user is already in roster
+    user_in_roster = check_user_in_roster(applicant_id, squad)
+    logging.info(f"User in roster check result: {user_in_roster}")
+
     try:
         embed = build_application_embed(
             squad=squad,
@@ -855,6 +935,15 @@ async def handle_new_application(ticket_message: discord.Message):
             age_confirmed=age_confirmed,
             status="pending"
         )
+
+        # Add warning if user is already in roster
+        if user_in_roster is True:
+            embed.add_field(
+                name="⚠️ WARNING",
+                value=f"This user is **already in the {squad} roster**!",
+                inline=False
+            )
+            logging.warning(f"User {applicant_id} is already in {squad} roster — added warning to embed")
 
         officer_role_mention = f"<@&{OFFICER_ROLE_ID}>"
         view = ApplicationView()
@@ -873,7 +962,8 @@ async def handle_new_application(ticket_message: discord.Message):
             "meets_requirements": meets_requirements or "Unknown",
             "age_confirmed": age_confirmed or "Unknown",
             "channel_id": channel.id,
-            "resolved": False
+            "resolved": False,
+            "already_in_roster": user_in_roster is True
         }
         save_applications(apps)
         logging.info(f"Saved application data for mgmt_message_id={mgmt_message.id} | {apps[str(mgmt_message.id)]}")
@@ -883,6 +973,7 @@ async def handle_new_application(ticket_message: discord.Message):
         return
 
     logging.info(f"handle_new_application COMPLETE | message_id={ticket_message.id}")
+
 
 
 # ==================== APPLICATION BUTTON LOGIC ====================
@@ -900,8 +991,11 @@ class AcceptConfirmModal(discord.ui.Modal, title="Confirm Acceptance"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        # ✅ DEFER IMMEDIATELY - gives 15 minutes instead of 3 seconds
+        await interaction.response.defer()
+        
         if not await check_officer_permission(interaction):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You don't have permission to do this.",
                 ephemeral=True
             )
@@ -909,13 +1003,13 @@ class AcceptConfirmModal(discord.ui.Modal, title="Confirm Acceptance"):
 
         answer = self.confirm.value.strip().lower()
         if answer != "yes":
-            await interaction.response.send_message("Cancelled — no changes made.", ephemeral=True)
+            await interaction.followup.send("Cancelled — no changes made.", ephemeral=True)
             return
 
         apps = load_applications()
         record = apps.get(str(self.message_id))
         if not record or record["resolved"]:
-            await interaction.response.send_message("⚠️ Application no longer available.", ephemeral=True)
+            await interaction.followup.send("⚠️ Application no longer available.", ephemeral=True)
             return
 
         guild = interaction.guild
@@ -991,7 +1085,8 @@ class AcceptConfirmModal(discord.ui.Modal, title="Confirm Acceptance"):
         if not member:
             role_summary = "⚠️ Could not find member in server to assign roles.\n"
 
-        await interaction.response.send_message(
+        # ✅ Use followup.send() instead of response.send_message()
+        await interaction.followup.send(
             f"✅ Application accepted!\n\n{role_summary}\n"
             f"🔔 Please remember to also **accept {record['ign']} in-game** or via the WT Assistant App.\n"
             f"📪 Please close this ticket using `/ticket close (reason)`.",
@@ -1001,12 +1096,13 @@ class AcceptConfirmModal(discord.ui.Modal, title="Confirm Acceptance"):
         # DM applicant
         if member:
             try:
+                message_text = (
+                    f"Congratulations! Your application to join **{squad}** has been **accepted**.\n"
+                    f"You will be accepted in-game shortly. Happy hunting! 🎯"
+                )
+
                 dm_embed = discord.Embed(
                     title="🎉 Application Accepted!",
-                    description=(
-                        f"Congratulations! Your application to join **{squad}** has been **accepted**.\n"
-                        f"You will be accepted in-game shortly. Happy hunting! 🎯"
-                    ),
                     color=APP_COLOR_ACCEPTED
                 )
                 dm_embed.add_field(name="In-Game Username", value=record["ign"], inline=True)
@@ -1020,12 +1116,14 @@ class AcceptConfirmModal(discord.ui.Modal, title="Confirm Acceptance"):
                     )
                 dm_embed.set_thumbnail(url=THUMBNAIL_URL)
                 dm_embed.set_footer(text="NERFD™ HQ Applications", icon_url=THUMBNAIL_URL)
-                await member.send(embed=dm_embed)
+
+                await member.send(content=message_text, embed=dm_embed)
             except discord.Forbidden:
                 pass
 
         # Log
         await send_application_log(guild, record, interaction.user.id, "accepted")
+
 
 
 class RejectConfirmModal(discord.ui.Modal, title="Confirm Rejection"):
@@ -1041,8 +1139,10 @@ class RejectConfirmModal(discord.ui.Modal, title="Confirm Rejection"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()  # ✅ DEFER IMMEDIATELY
+        
         if not await check_officer_permission(interaction):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You don't have permission to do this.",
                 ephemeral=True
             )
@@ -1050,13 +1150,13 @@ class RejectConfirmModal(discord.ui.Modal, title="Confirm Rejection"):
 
         answer = self.confirm.value.strip().lower()
         if answer != "yes":
-            await interaction.response.send_message("Cancelled — no changes made.", ephemeral=True)
+            await interaction.followup.send("Cancelled — no changes made.", ephemeral=True)
             return
 
         apps = load_applications()
         record = apps.get(str(self.message_id))
         if not record or record["resolved"]:
-            await interaction.response.send_message("⚠️ Application no longer available.", ephemeral=True)
+            await interaction.followup.send("⚠️ Application no longer available.", ephemeral=True)
             return
 
         guild = interaction.guild
@@ -1080,7 +1180,7 @@ class RejectConfirmModal(discord.ui.Modal, title="Confirm Rejection"):
         )
         await interaction.message.edit(embed=new_embed, view=None)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(  # ✅ Use followup.send()
             f"❌ Application rejected.\n\n"
             f"⚠️ Please do **not** accept {record['ign']} in-game or via the WT Assistant App.\n"
             f"📪 Please close this ticket using `/ticket close (reason)`.",
@@ -1096,12 +1196,13 @@ class RejectConfirmModal(discord.ui.Modal, title="Confirm Rejection"):
 
         if member:
             try:
+                message_text = (
+                    f"We're sorry to inform you that your application to join **{squad}** "
+                    f"has been **rejected**."
+                )
+
                 dm_embed = discord.Embed(
                     title="Application Update",
-                    description=(
-                        f"We're sorry to inform you that your application to join **{squad}** "
-                        f"has been **rejected**."
-                    ),
                     color=APP_COLOR_REJECTED
                 )
                 dm_embed.add_field(name="In-Game Username", value=record["ign"], inline=True)
@@ -1109,7 +1210,8 @@ class RejectConfirmModal(discord.ui.Modal, title="Confirm Rejection"):
                 dm_embed.add_field(name="Over 16?", value=record["age_confirmed"], inline=True)
                 dm_embed.set_thumbnail(url=THUMBNAIL_URL)
                 dm_embed.set_footer(text="NERFD™ HQ Applications", icon_url=THUMBNAIL_URL)
-                await member.send(embed=dm_embed)
+
+                await member.send(content=message_text, embed=dm_embed)
             except discord.Forbidden:
                 pass
 
@@ -1129,8 +1231,10 @@ class EditApplicationModal(discord.ui.Modal, title="Edit Application"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()  # ✅ DEFER IMMEDIATELY
+        
         if not await check_officer_permission(interaction):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You don't have permission to do this.",
                 ephemeral=True
             )
@@ -1139,7 +1243,7 @@ class EditApplicationModal(discord.ui.Modal, title="Edit Application"):
         apps = load_applications()
         record = apps.get(str(self.message_id))
         if not record or record["resolved"]:
-            await interaction.response.send_message("⚠️ Application no longer available.", ephemeral=True)
+            await interaction.followup.send("⚠️ Application no longer available.", ephemeral=True)
             return
 
         record["ign"] = self.ign_input.value.strip()
@@ -1155,7 +1259,8 @@ class EditApplicationModal(discord.ui.Modal, title="Edit Application"):
             status="pending"
         )
         await interaction.message.edit(embed=new_embed, view=ApplicationView())
-        await interaction.response.send_message("✅ Application updated.", ephemeral=True)
+        await interaction.followup.send("✅ Application updated.", ephemeral=True)  # ✅ Use followup.send()
+
 
 
 async def send_application_log(guild: discord.Guild, record: dict, handled_by_id: int, result: str):
@@ -1176,6 +1281,10 @@ async def send_application_log(guild: discord.Guild, record: dict, handled_by_id
     embed.add_field(name="Meets Requirements?", value=record["meets_requirements"], inline=True)
     embed.add_field(name="Over 16?", value=record["age_confirmed"], inline=True)
     embed.add_field(name="Handled By", value=f"<@{handled_by_id}>", inline=False)
+    # Timestamps
+    submitted_ts = record.get("submitted_at", "Unknown")
+    embed.add_field(name="Submitted At", value=f"<t:{int(submitted_ts)}:f>" if isinstance(submitted_ts, (int, float)) else submitted_ts, inline=True)
+    embed.add_field(name="Handled At", value=f"<t:{int(discord.utils.utcnow().timestamp())}:f>", inline=True)
     embed.set_thumbnail(url=THUMBNAIL_URL)
     embed.set_footer(text="NERFD™ HQ Applications", icon_url=THUMBNAIL_URL)
 

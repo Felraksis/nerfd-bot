@@ -1,0 +1,97 @@
+{
+  "1523770804972687482": {
+    "applicant_id": 812404406133063721,
+    "squad": "NERFD",
+    "ign": "Felra",
+    "meets_requirements": "Yes",
+    "age_confirmed": "Yes",
+    "channel_id": 1523770802376544427,
+    "resolved": true,
+    "handled_by": 812404406133063721,
+    "result": "accepted"
+  },
+  "1523773310062821547": {
+    "applicant_id": 812404406133063721,
+    "squad": "NERFD",
+    "ign": "Felraksis",
+    "meets_requirements": "Yes",
+    "age_confirmed": "Yes",
+    "channel_id": 1523773297228251418,
+    "resolved": true,
+    "already_in_roster": false,
+    "handled_by": 812404406133063721,
+    "result": "accepted"
+  },
+  "1523774212962258957": {
+    "applicant_id": 716358451395297312,
+    "squad": "NERFD",
+    "ign": "SOMETHING normal idk what",
+    "meets_requirements": "Yes",
+    "age_confirmed": "No",
+    "channel_id": 1523774210936406167,
+    "resolved": true,
+    "already_in_roster": false,
+    "handled_by": 812404406133063721,
+    "result": "accepted"
+  },
+  "1523777001838874785": {
+    "applicant_id": 812404406133063721,
+    "squad": "NERFD",
+    "ign": "Final Test",
+    "meets_requirements": "Yes",
+    "age_confirmed": "Yes",
+    "channel_id": 1523776999326355688,
+    "resolved": true,
+    "already_in_roster": false,
+    "handled_by": 510274556162736128,
+    "result": "rejected"
+  },
+  "1523780441470144674": {
+    "applicant_id": 812404406133063721,
+    "squad": "NERFD",
+    "ign": "Test",
+    "meets_requirements": "Yes",
+    "age_confirmed": "Yes",
+    "channel_id": 1523780438236205239,
+    "resolved": true,
+    "already_in_roster": false,
+    "handled_by": 319460755927859200,
+    "result": "accepted"
+  },
+  "1523783302409093281": {
+    "applicant_id": 310796388458037248,
+    "squad": "NERFD",
+    "ign": "testlmao",
+    "meets_requirements": "No",
+    "age_confirmed": "No",
+    "channel_id": 1523783300123070464,
+    "resolved": true,
+    "already_in_roster": false,
+    "handled_by": 319460755927859200,
+    "result": "rejected"
+  },
+  "1523783738859978987": {
+    "applicant_id": 310796388458037248,
+    "squad": "N3RFD",
+    "ign": "Ash_Main",
+    "meets_requirements": "Yes",
+    "age_confirmed": "Yes",
+    "channel_id": 1523783735450013729,
+    "resolved": true,
+    "already_in_roster": false,
+    "handled_by": 812404406133063721,
+    "result": "rejected"
+  },
+  "1523789539691331781": {
+    "applicant_id": 310796388458037248,
+    "squad": "NERFD",
+    "ign": "Ash_Main",
+    "meets_requirements": "Yes",
+    "age_confirmed": "Yes",
+    "channel_id": 1523789537007108118,
+    "resolved": true,
+    "already_in_roster": false,
+    "handled_by": 812404406133063721,
+    "result": "accepted"
+  }
+}
