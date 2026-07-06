@@ -122,8 +122,10 @@ def save_applications(data):
 # ==================== BOT SETUP ====================
 
 intents = discord.Intents.default()
+intents.message_content = True   # ADD THIS LINE
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
 
 
 def has_required_role():
