@@ -1222,7 +1222,7 @@ class EditApplicationModal(discord.ui.Modal, title="Edit Application"):
     def __init__(self, message_id: int, current_ign: str):
         super().__init__()
         self.message_id = message_id
-        self.ign_input.default = current_ign
+        self.ign_input.default = ""
 
     ign_input = discord.ui.TextInput(
         label="In-Game Username",
